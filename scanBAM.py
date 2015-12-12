@@ -178,7 +178,7 @@ for bam in sys.argv[3:]:
         # CASE 2: BAM file in Ensembl format, TSV file in UCSC
         else:
             if chrom.startswith("chr"): chrom = chrom[3:]
-            if chrom == "M": chrom == "MT"
+            if chrom == "M": chrom = "MT"
         
         # First check for alignments spanning the actual peptide locus. (example of coordinate format: chr6_29894499_29894540_+)
         pcoord = tsv_info['pepcoord'][p]
