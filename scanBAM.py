@@ -37,10 +37,62 @@ def reads_with_mismatch_in_interval(reference, bamfile, chrom, start, end):
                 mreads.append(piledup.alignment.query_name)
     return mreads
 
+def parse_coords(cstr):
+    return(cstr.split('_')[:-1])
+
+def is_in_interval(coord, interval_start, interval_end):
+    return ( ( int(coord) >= int(interval_start)) and (int(coord) <= int(interval_end) ) )
+
+def get_peptide_segments(pep_info, p):
+    """
+    In some cases, peptides come from spliced segments. In these cases we need to 
+    infer the peptide coding regions from the tsv file.
+    """
+    start = pep_info['start'][p]
+    end = pep_info['end'][p]
+    chr = pep_info['chrom'][p]
+    pepcoor = pep_info['pepcoord'][p]
+    pep_coord = parse_coords(pepcoor)    
+    if len(start.split(';')) == 1: # Not spliced
+        return([pep_coord[1], pep_coord[2]])
+    # If spliced
+    estarts = start.split(';')
+    eends = end.split(';')
+    #print(chr)
+    #print(pep_coord)
+    assert(pep_coord[0]==chr)
+    pep_start_coord_exon = -1
+    pep_end_coord_exon = -1
+    for i in range(0, len(estarts)):
+        assert(int(estarts[i]) < int(eends[i]))
+        if is_in_interval(pep_coord[1], estarts[i], eends[i]): pep_start_coord_exon = i
+        if is_in_interval(pep_coord[2], estarts[i], eends[i]): pep_end_coord_exon = i
+        # For peptides where start or end cannot be assigned to an exon, assume it belongs to the same one as the end that can be assigned.
+        # This is a rare case
+    #print('Peptide coordinates:', pep_coord)
+    #print('Inferred start exon: ' + str(pep_start_coord_exon) + ' (' + str(estarts[pep_start_coord_exon]) + '-' + str(eends[pep_start_coord_exon]))
+    #print('Inferred end exon: ' + str(pep_end_coord_exon) + ' (' + str(estarts[pep_end_coord_exon]) + '-' + str(eends[pep_end_coord_exon]))
+    #input()
+    if pep_start_coord_exon == -1 or pep_end_coord_exon == -1:
+        if pep_start_coord_exon == -1: pep_start_coord_exon = pep_end_coord_exon
+        if pep_end_coord_exon == -1: pep_end_coord_exon = pep_start_coord_exon
+    if pep_start_coord_exon == pep_end_coord_exon:
+        # Peptide contained within one exon. Can print out the original coordinates.
+        return([pep_coord[1], pep_coord[2]])
+    else:
+        # Need to stitch together the regions from annotation.
+        # First entry, for the starting exon
+        # Chromosome, peptide start coord, end of the starting exon, etc
+        entries = []
+        entries.append( [pep_coord[1], eends[pep_start_coord_exon]] )
+        # Second entry, for the ending exon
+        entries.append( [estarts[pep_end_coord_exon], pep_coord[2]])
+        return(entries)
+
 def aln_has_mismatch_in_interval(reference, bamformat, aln, chrom, start, end):
     """
-    Check if alignment at least one mismatch in the interval (start, end) on the given chromosome.
-
+    Check if (unspliced) alignment has at least one mismatch in the interval (start, end) on the given chromosome.
+    
     reference -- an IndexedFasta object
     """
     if bamformat == 'UCSC':
@@ -50,19 +102,43 @@ def aln_has_mismatch_in_interval(reference, bamformat, aln, chrom, start, end):
     if (aln.get_overlap(start, end)) == 0: 
         return False
 
-    ds = start - aln.reference_start - 1
-    de = aln.reference_end - end 
-    qseq = aln.query_alignment_sequence[(aln.query_alignment_start+ds):(aln.query_alignment_end-de)] 
-    rseq = reference[chrom][(aln.reference_start+ds):(aln.reference_end-de)] 
+    #print("Start of peptide: " + '\t' + str(start))
+    #print("End of peptide: " + '\t' + str(end))
+    #print("Start of alignment: " + '\t' + str(aln.reference_start))
+    #print("End of alignment: " + '\t' + str(aln.reference_end))
+    #print(aln)
+    #print(aln.query_alignment_sequence)
 
-    if len(qseq) != len(rseq): return True
+    if start >= aln.reference_start and end <= aln.reference_end:
+        ds = start - aln.reference_start 
+        de = aln.reference_end - end
+        qseq = aln.query_alignment_sequence[ds:(aln.query_alignment_end-aln.query_alignment_start-de)] 
+        rseq = reference[chrom][(aln.reference_start+ds):(aln.reference_end-de)] 
     
-    if aln.qname == "SRR1576181.6093138": 
-        sys.stderr.write(str(qseq)+'\n')
-        sys.stderr.write(str(rseq)+'\n')
-
+    elif start < aln.reference_start:
+        if end <= aln.reference_end:
+            #ds = end - aln.reference_start 
+            de = aln.reference_end - end
+            qseq = aln.query_alignment_sequence[aln.query_alignment_start:(aln.query_alignment_end-de)] 
+            rseq = reference[chrom][aln.reference_start:(aln.reference_end-de)] 
+        else: # Rare case: alignment contained within peptide. start < ref start and end > ref end
+            qseq = aln.query_alignment_sequence
+            rseq = reference[chrom][aln.reference_start:aln.reference_end] 
+    else: # start > ref start and end > ref end
+        if start > aln.reference_start and end >= aln.reference_end:
+            de = aln.reference_end - start 
+            qseq = aln.query_alignment_sequence[(aln.query_alignment_end-aln.query_alignment_start-de):(aln.query_alignment_end-aln.query_alignment_start)] 
+            rseq = reference[chrom][(aln.reference_end-de):(aln.reference_end)] 
+        
+    #rseq = reference[chrom][(aln.reference_start+ds):(end)]
+  
+    if len(qseq) != len(rseq): 
+        # Should happen for insertions and deletions only
+        return True
+    
     for i in range(0, len(qseq)):
-        if str(qseq[i]) != str(rseq[i]): 
+        if str(qseq[i]) != str(rseq[i]):
+            debug_file.write('Mismatch: ' + str(qseq) + '\t' + str(rseq))
             return True
     return False
 
@@ -102,10 +178,24 @@ def multimapping_ok(aln, max_loci=1):
         except:
             return(-1) # Could not find a tag for number of loci
 
-# Check for spliced alignments [Not used currently]
+# Check for spliced alignments
+# UNDER DEVELOPMENT :)
 def cigar_ok(aln): 
     if 'N' in aln.cigarstring:
-        return False # Discard if spliced alignment
+        # Find out where the read hits the reference
+        ct = aln.cigartuples
+        curr_loc = aln.reference_start
+        aln_starts = []
+        aln_ends = []
+        for tup in ct:
+            if tup[0] == 0:
+                aln_starts.append(curr_loc)
+                aln_ends.append(curr_loc + tup[1])
+            # This needs to be updated in any case    
+            curr_loc += tup[1]
+        for e in zip(aln_starts, aln_ends):
+            mm = aln_has_mismatch_in_interval(reference, bamformat, aln, chrom, e[0], e[1])
+        input()
     return True
 
 # Get the MD:Z tag referring to mismatches [not used currently]
@@ -128,6 +218,28 @@ def find_nice_alns(region, bamfile, max_mismatches=1):
             good_alns.append(x)
     return(good_alns)
         
+def find_fusion_alns(regions, bamfile):
+    """
+    Try to find alignments corresponding to a fusion event.
+    Right now just deals with 2 regions.
+    """ 
+    fus_alns = []
+    chrom1, start1, end1 = regions[0]
+    try:
+        chrom2, start2, end2 = regions[1]
+    except:
+        print("Abnormal exit")
+        print(regions)
+        sys.exit(0)
+    #print('Partner should be at:' + str(chrom2) + ':' + str(start2) + '-' + str(end2))
+    iter = bamfile.fetch(chrom1, start1, end1)
+    for x in iter:
+        if bamfile.getrname(x.reference_id) == chrom1 and bamfile.getrname(x.next_reference_id) == chrom2:
+            if (x.next_reference_start >= start2 and x.next_reference_start <= end2):
+                if mismatches_ok(x) and pairing_ok(x) and multimapping_ok(x):
+                    fus_alns.append(x)
+    return(fus_alns)
+
 # Check input arguments
 if len(sys.argv) < 4:
     sys.exit("python analyse_sam.py <peptide file> <indexed FASTA file> <BAM files>")
@@ -149,8 +261,11 @@ with open(sys.argv[1]) as tsv:
             tsv_info['txtype'][pepseq]='lnc'
         elif annotation[0:3] == 'PGO':
             tsv_info['txtype'][pepseq]='pg'
+        elif annotation[0:3] == "Fus":
+            tsv_info['txtype'][pepseq]='fus'
         else: 
             tsv_info['txtype'][pepseq]='nov'
+
         tsv_info['chrom'][pepseq] = chrom
         tsv_info['start'][pepseq] = start        
         tsv_info['end'][pepseq] = stop
@@ -169,45 +284,93 @@ for bam in sys.argv[3:]:
         if ref.startswith('chr'): suspected_bamchromformat = 'UCSC'
     max_mismatches = 1
     for p in peptides:
-        
-        chrom = tsv_info['chrom'][p]
-        # BAM file in UCSC format, TSV file in Ensembl
-        if suspected_bamchromformat=="UCSC":
-            if not chrom.startswith("chr"): chrom = 'chr' + chrom 
-            if chrom == "chrMT": chrom = "chrM"
-        # CASE 2: BAM file in Ensembl format, TSV file in UCSC
-        else:
-            if chrom.startswith("chr"): chrom = chrom[3:]
-            if chrom == "M": chrom == "MT"
-        
-        # First check for alignments spanning the actual peptide locus. (example of coordinate format: chr6_29894499_29894540_+)
-        pcoord = tsv_info['pepcoord'][p]
-        (pchr, pstart, pstop, pstrand) = pcoord.split('_') # We only need the start and stop; the chromosome info has already been processed above
-
-        # Obtain a list of reads that have a mismatch in the peptide locus
-        # pep_mism_reads = reads_with_mismatch_in_interval(refFasta, bamfile, chrom, int(pstart), int(pstop))
-        # print("Peptide coords: ", chrom, pstart, pstop)
-        # Then find the intervals that we should check for alignments along the whole annotated locus. This could be a single interval (for a pseudogene or novel transcribed region)
+        chroms = tsv_info['chrom'][p].split(';')
+        # Coordinates for the actual peptide locus or loci (in the case of spliced peptides). (example of coordinate format: chr6_29894499_29894540_+)
+        pcoords = get_peptide_segments(tsv_info, p)
+        # Below commented out when implementing spliced peptide handling
+        #pcoord = tsv_info['pepcoord'][p]
+        #(pchr, pstart, pstop, pstrand) = pcoord.split('_') # We only need the start and stop; the chromosome info has already been processed above
+        # Find the intervals that we should check for alignments along the whole annotated locus. This could be a single interval (for a pseudogene or novel transcribed region)
         # or a set of regions (for spliced long non-coding RNAs).
         start = tsv_info['start'][p]
         stop = tsv_info['end'][p]
         regions_to_scan = []
         for i in range(0, len(start.rsplit(";"))):
+            if len(chroms) > 1:
+                chrom = chroms[i]
+            else:
+                chrom = chroms[0]
+            # CASE 1: BAM file in UCSC format, TSV file in Ensembl
+            if suspected_bamchromformat=="UCSC":
+                if not chrom.startswith("chr"): chrom = 'chr' + chrom 
+                if chrom == "chrMT": chrom = "chrM"
+            # CASE 2: BAM file in Ensembl format, TSV file in UCSC
+            else:
+                if chrom.startswith("chr"): chrom = chrom[3:]
+                if chrom == "M": chrom = "MT"
             regions_to_scan.append( (chrom, int(start.rsplit(";")[i]), int(stop.rsplit(";")[i])) )        
         passed_alns = set()
         n_failed_due_to_mismatch = 0
+
+        ###
+        # Right now we just search for evidence separately in the putative fusion regions
+        # I e not requiring a chimeric alignment
+        # So the code below is commented out
+        ###
+
+        #if tsv_info['txtype'][p] == 'fus' and len(regions_to_scan) > 1:
+        #    fus_alns = []
+        #    assert(len(regions_to_scan)%2==0)
+        #    for i in range(int(len(regions_to_scan)/2)):
+        #        fus_alns.append( find_fusion_alns(regions_to_scan[2*i:(2*i+2)], bamfile))
         for r in regions_to_scan:
             good_alns = find_nice_alns(r, bamfile)
             for a in good_alns:
-                if not aln_has_mismatch_in_interval(refFasta, suspected_bamchromformat, a, chrom, int(pstart), int(pstop)):
-                    passed_alns.add(a)
+                # Check if spliced alignment
+                if 'N' in a.cigarstring:
+                    # If spliced, find out the aligned bits
+                    #print("Spliced alignment")
+                    #print(str(a.reference_start) + '\t' + a.cigarstring)
+                    ct = a.cigartuples
+                    curr_loc = a.reference_start
+                    aln_starts = []
+                    aln_ends = []
+                    for tup in ct:
+                        if tup[0] == 0:
+                            aln_starts.append(curr_loc)
+                            aln_ends.append(curr_loc + tup[1]-1)
+                        # This needs to be updated in any case    
+                        curr_loc += tup[1]-1
+                    no_mm = True
+                    for e in zip(aln_starts, aln_ends):
+                        #print(e)
+                        #if (aln_has_mismatch_in_interval(refFasta, suspected_bamchromformat, a, chrom, e[0], e[1])):
+                        #    no_mm = False
+                        pass
+                    if no_mm: 
+                        #print('No mismatch')
+                        passed_alns.add(a)
+                    else:
+                        pass
+                        #print('Mismatch')
+                        #print(a)
+                    #input()
+                # Not spliced alignment - just make sure there is no mismatch in the peptide region
                 else:
-                    debug_file.write('Peptide mismatch ' + a.qname + ' ' + pstart + ' ' + pstop + '\n')
-                    n_failed_due_to_mismatch += 1
+                    mm = False 
+                    for seg in pcoords: 
+                        if aln_has_mismatch_in_interval(refFasta, suspected_bamchromformat, a, chrom, int(seg[0]), int(seg[1])):
+                            mm = True
+                    if not mm:
+                        passed_alns.add(a)
+                    else:
+                        debug_file.write('Peptide mismatch ' + a.qname + ' ' + seg[0] + ' ' + seg[1] + '\n')
+                        n_failed_due_to_mismatch += 1
+                    
         #if not a.qname in pep_mism_reads:
                     #passed_alns.add(a.qname)
         aln_count[p] = len(passed_alns)
-        debug_file.write('BAM file: ' + bam + ' Peptide locus ' + chrom + ':' + pstart + '-' + pstop + '\n')
+        debug_file.write('BAM file: ' + bam + ' Peptide locus ' + chrom + ':' + pcoords[0][0] + '-' + pcoords[0][1] + '\n')
         debug_file.write('Passed through ' + str(len(passed_alns)) + ' alignments. Found ' +  str(n_failed_due_to_mismatch) + ' alignments with mismatches in peptide locus' + '\n#####################\n')
     aln_table[bam]=aln_count
 
