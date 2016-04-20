@@ -43,6 +43,17 @@ def parse_coords(cstr):
 def is_in_interval(coord, interval_start, interval_end):
     return ( ( int(coord) >= int(interval_start)) and (int(coord) <= int(interval_end) ) )
 
+def get_overlap(s1, e1, s2, e2):
+    """ 
+    Get the coordinates of the overlap between two intervals
+    """
+    if s1 > e2 or e1 < s2: return None
+    if s1 <= s2 and e1 <= e2: return (s2, e1) # Will also work for s1 == s2 and e1 == e2 
+    if s1 <= s2 and e1 >= e2: return (s2, e2) # Alignment enclosed in peptide
+    if s1 >= s2 and e1 <= e2: return (s1, e1) # Peptide enclosed in alignment
+    if s1 >= s2 and e1 >= e2: return (s1, e2)
+    sys.exit('Check your numbers')
+
 def get_peptide_segments(pep_info, p):
     """
     In some cases, peptides come from spliced segments. In these cases we need to 
@@ -102,11 +113,6 @@ def aln_has_mismatch_in_interval(reference, bamformat, aln, chrom, start, end):
     if (aln.get_overlap(start, end)) == 0: 
         return False
 
-    #print("Start of peptide: " + '\t' + str(start))
-    #print("End of peptide: " + '\t' + str(end))
-    #print("Start of alignment: " + '\t' + str(aln.reference_start))
-    #print("End of alignment: " + '\t' + str(aln.reference_end))
-    #print(aln)
     #print(aln.query_alignment_sequence)
 
     if start >= aln.reference_start and end <= aln.reference_end:
@@ -130,15 +136,25 @@ def aln_has_mismatch_in_interval(reference, bamformat, aln, chrom, start, end):
             qseq = aln.query_alignment_sequence[(aln.query_alignment_end-aln.query_alignment_start-de):(aln.query_alignment_end-aln.query_alignment_start)] 
             rseq = reference[chrom][(aln.reference_end-de):(aln.reference_end)] 
         
-    #rseq = reference[chrom][(aln.reference_start+ds):(end)]
+    #print(qseq)
+    #print(rseq)
   
     if len(qseq) != len(rseq): 
         # Should happen for insertions and deletions only
+        debug_file.write('Indel: ' + aln.cigarstring + '\n')
         return True
     
     for i in range(0, len(qseq)):
         if str(qseq[i]) != str(rseq[i]):
-            debug_file.write('Mismatch: ' + str(qseq) + '\t' + str(rseq))
+            debug_file.write('Mismatch: ' + '\n' + str(qseq) + '\n' + str(rseq) + '\n')
+            # More details
+            debug_file.write("Start of peptide: " + '\t' + str(start) + '\n')
+            debug_file.write("End of peptide: " + '\t' + str(end) + '\n')
+            debug_file.write("Start of alignment: " + '\t' + str(aln.reference_start) + '\n')
+            debug_file.write("End of alignment: " + '\t' + str(aln.reference_end) + '\n')
+            debug_file.write(str(aln))
+
+
             return True
     return False
 
@@ -239,6 +255,36 @@ def find_fusion_alns(regions, bamfile):
                 if mismatches_ok(x) and pairing_ok(x) and multimapping_ok(x):
                     fus_alns.append(x)
     return(fus_alns)
+
+def compare_seqs(aln, pcoords, reference, chrformat, chrom):
+
+    if chrformat == 'UCSC':
+        chrom = chrom[3:]
+        if chrom == 'M': chrom = 'MT'    
+    mm = 0
+    # Step through alignment entries
+    ct = aln.cigartuples
+    curr_loc = aln.reference_start
+    offset_in_read = 0
+    for tup in ct:
+        if tup[0] == 0: # Match
+            aln_seg_start = curr_loc
+            aln_seg_end = curr_loc + tup[1]
+            for seg in pcoords:
+                ol = get_overlap(int(seg[0]),int(seg[1]),aln_seg_start,aln_seg_end)
+                if ol:
+                    overlap_length = ol[1] - ol[0] + 1
+                    overlap_offset = ol[0] - curr_loc
+                    qseq = aln.query_sequence[(aln.query_alignment_start+offset_in_read+overlap_offset):(aln.query_alignment_start+offset_in_read+overlap_offset+overlap_length)]
+                    rseq = reference[chrom][ol[0]:(ol[1]+1)]
+                    assert( overlap_offset >= 0)
+                    for i in range(0, len(qseq)): # It can happen that len(rseq) > len(qseq) if we are at the end of the read, but that's ok! We are only interested in mismatches in qseq w r t rseq
+                        if str(qseq[i]) != str(rseq[i]):
+                            mm += 1
+                            debug_file.write('Mismatch in spliced segment: ' + '\n' + str(qseq) + '\n' + str(rseq) + '\n')
+            offset_in_read += tup[1] # Keep track of location in read
+        curr_loc += tup[1] # Keep track of location on reference
+    return(mm)
 
 # Check input arguments
 if len(sys.argv) < 4:
@@ -341,20 +387,18 @@ for bam in sys.argv[3:]:
                             aln_ends.append(curr_loc + tup[1]-1)
                         # This needs to be updated in any case    
                         curr_loc += tup[1]-1
-                    no_mm = True
+                    overlap = False
                     for e in zip(aln_starts, aln_ends):
-                        #print(e)
-                        #if (aln_has_mismatch_in_interval(refFasta, suspected_bamchromformat, a, chrom, e[0], e[1])):
-                        #    no_mm = False
-                        pass
-                    if no_mm: 
-                        #print('No mismatch')
-                        passed_alns.add(a)
-                    else:
-                        pass
-                        #print('Mismatch')
-                        #print(a)
-                    #input()
+                        for seg in pcoords:
+                            ol = get_overlap(int(seg[0]), int(seg[1]), e[0], e[1])
+                            if ol:
+                                overlap = True
+                                #print('Overlap between: ' + str(seg) + ' and ' + str(e) + ': ' + str(ol))
+                    if overlap: 
+                        # Check if they have mismatches
+                        mm = compare_seqs(a, pcoords, refFasta, suspected_bamchromformat, chrom) 
+                        if mm == 0:
+                            passed_alns.add(a)
                 # Not spliced alignment - just make sure there is no mismatch in the peptide region
                 else:
                     mm = False 
