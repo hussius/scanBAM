@@ -353,6 +353,7 @@ for bam in sys.argv[3:]:
         if ref.startswith('chr'): suspected_bamchromformat = 'UCSC'
     max_mismatches = 1
     for p in peptides:
+
         dbg = False
         if p == "AAAEIDEEPVSK": dbg = True
         chroms = tsv_info['chrom'][p].split(';')
