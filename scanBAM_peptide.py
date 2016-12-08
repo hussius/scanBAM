@@ -64,7 +64,8 @@ def get_peptide_segments(pep_info, p, suspected_format):
     chr = pep_info['chrom'][p]
     pepcoor = pep_info['pepcoord'][p]
     pep_coord = parse_coords(pepcoor)    
-
+    #print(pep_info['chrom'][p])
+    #print(pepcoor)
     assert(pep_coord[0]==chr)
     pep_chr = pep_coord[0]
     # CASE 1: BAM file in UCSC, TSV in ENSEMBL
@@ -157,7 +158,7 @@ def aln_has_mismatch_in_interval(reference, bamformat, aln, chrom, start, end):
         de = aln.reference_end - end     # Offest on aligned sequence, from its end
         qseq = aln.query_alignment_sequence[ds:(aln.query_alignment_end-aln.query_alignment_start-de)] 
         rseq = reference[chrom][(aln.reference_start+ds):(aln.reference_end-de)] 
-    
+
     elif start < aln.reference_start:
         # Peptide starts before aligned segment
         if end <= aln.reference_end:
@@ -188,14 +189,13 @@ def aln_has_mismatch_in_interval(reference, bamformat, aln, chrom, start, end):
     if dbg: sys.stderr.write(str(qseq) + '\n')
     if dbg: sys.stderr.write(str(rseq) + '\n')
 
-    if qseq == '' or rseq == '':
-        #print(aln)
-        sys.exit('Could not extract sequence.')
-
     if len(qseq) != len(rseq): 
         # Should happen for insertions and deletions only
         debug_file.write('Indel: ' + aln.cigarstring + '\n')
         return True
+
+    if qseq == '' or rseq == '':
+        sys.exit('Could not extract sequence.')
     
     for i in range(0, len(qseq)):
         if str(qseq[i]).upper() != str(rseq[i]).upper():
@@ -320,6 +320,8 @@ def compare_seqs(aln, seg, reference, chrformat, chrom):
     return(mm)
 
 def mismatch_in_spliced(aln, pcoords, reference, suspected_bamchromformat):
+    #print(aln)
+    #print(pcoords)
     mm = 0
     chrom, pstart, pend = pcoords
     if suspected_bamchromformat == 'UCSC':
@@ -353,17 +355,20 @@ def mismatch_in_spliced(aln, pcoords, reference, suspected_bamchromformat):
                 #print('Overlap offset for peptide: ' + str(overlap_offset_pep))
                 #print('Overlap length: ' + str(overlap_length))
                 aln_bit = aln.query_sequence[offset_in_read+overlap_offset_aln:(offset_in_read+overlap_offset_aln+overlap_length)]
-                pep_rseq = reference[chrom][ol[0]:ol[1]]
-                #sys.stderr.write('aligned bit:          ' + aln_bit + '\n')
-                #sys.stderr.write('matching peptide seq: ' + str(pep_rseq) + '\n')
-                for i in range(0, len(aln_bit)):
-                    if aln_bit[i].lower() != str(pep_rseq[i]).lower():
-                        mm += 1
+                try:
+                    pep_rseq = reference[chrom][ol[0]:ol[1]]
+                    #sys.stderr.write('aligned bit:          ' + aln_bit + '\n')
+                    #sys.stderr.write('matching peptide seq: ' + str(pep_rseq) + '\n')
+                    for i in range(0, len(aln_bit)):
+                     if aln_bit[i].lower() != str(pep_rseq[i]).lower():
+                         mm += 1
                         #print('Mismatch in spliced segment')
 #                        print('aligned bit:          ' + aln_bit)
 #                        print('matching peptide seq: ' + str(pep_rseq))
                         #print(ol)
                         #input()
+                except:
+                    pass # No overlap
             else:
                 pass
                 #print('No overlap')
@@ -389,7 +394,10 @@ tsv_info = {'score':{}, 'psmcount':{}, 'txtype':{}, 'chrom':{},'start':{},'end':
 with open(sys.argv[1]) as tsv:
     tsv.readline() # Skip header
     for line in tsv:
-        [pepseq, pepcoord, annotation, chrom, strand, start, stop, msgf_score, psm_count] = line.rsplit()
+        try:
+            [pepseq, pepcoord, annotation, chrom, strand, start, stop, msgf_score, psm_count] = line.rsplit('\t')
+        except:
+            print(line.strip())
         peptides.append(pepseq) # Peptide sequence
         tsv_info['score'][pepseq] = msgf_score # MSGF score
         tsv_info['psmcount'][pepseq] = psm_count # PSM count
@@ -487,7 +495,8 @@ for bam in sys.argv[3:]:
 bam = sorted(list(aln_table.keys()))
 
 # Write output file header.
-sys.stdout.write('sequence\ttxtype\tscore\tpsmcount\t')
+#sys.stdout.write('sequence\ttxtype\tscore\tpsmcount\t')
+sys.stdout.write('sequence\t')
 for i in range(0,len(bam)):
         sys.stdout.write(bam[i].split('.')[0].split('/')[-1])
         if (i < (len(bam)-1)): sys.stdout.write('\t')
@@ -495,7 +504,8 @@ for i in range(0,len(bam)):
 
 # And the counts.
 for pep in sorted(aln_table[bam[0]].keys()):
-    sys.stdout.write(pep + '\t' + tsv_info['txtype'][pep] + '\t' + tsv_info['score'][pep] + '\t' + tsv_info['psmcount'][pep] + '\t')
+    #sys.stdout.write(pep + '\t' + tsv_info['txtype'][pep] + '\t' + tsv_info['score'][pep] + '\t' + tsv_info['psmcount'][pep] + '\t')
+    sys.stdout.write(pep + '\t')
     for i in range(0,len(bam)): 
         sys.stdout.write(str(aln_table[bam[i]][pep]))
         if (i < (len(bam)-1)): sys.stdout.write('\t')
